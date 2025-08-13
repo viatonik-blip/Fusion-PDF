@@ -16,10 +16,24 @@ if not uploaded or len(uploaded) < 2:
     st.info("Ajoutez au moins 2 fichiers PDF pour commencer.")
     st.stop()
 
-# Initialisation de l'ordre
+# Liste des noms actuellement uploadés
 names_now = [f.name for f in uploaded]
-if "order_names" not in st.session_state or set(st.session_state.order_names) != set(names_now):
+
+# Initialisation session_state
+if "order_names" not in st.session_state:
     st.session_state.order_names = names_now[:]
+    st.session_state._prev_names = names_now[:]
+    st.session_state.sort_key = 0
+# Si la liste de fichiers change
+elif set(names_now) != set(st.session_state._prev_names):
+    # On garde l'ordre existant pour les fichiers encore présents
+    kept = [n for n in st.session_state.order_names if n in names_now]
+    # On ajoute les nouveaux à la fin
+    new = [n for n in names_now if n not in st.session_state.order_names]
+    st.session_state.order_names = kept + new
+    # Mise à jour clé pour forcer le re-render
+    st.session_state.sort_key += 1
+    st.session_state._prev_names = names_now[:]
 
 # Limite de taille totale
 MAX_MB = 200
@@ -33,7 +47,7 @@ st.write("### 1) Réorganisez (glisser-déposer)")
 ordered_names = sortables.sort_items(
     st.session_state.order_names,
     direction="vertical",
-    key="sortable_list"
+    key=f"sortable_list_{st.session_state.sort_key}"  # clé dynamique
 )
 st.session_state.order_names = ordered_names
 
