@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Import check
+        run: python - << 'PY'
+import importlib
+for m in ["streamlit", "pypdf"]:
+    importlib.import_module(m)
+print("Imports OK")
+PY

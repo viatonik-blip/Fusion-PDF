@@ -1,19 +1,11 @@
-# 🎈 Blank app template
+# 📎 Fusionner des PDF — Streamlit
 
-A simple Streamlit app template for you to modify!
+Petit outil web (Streamlit) pour **fusionner 2+ fichiers PDF** facilement, sans stockage serveur (traitement en mémoire).
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
+## 🚀 Démo locale
 
-### How to run it on your own machine
-
-1. Install the requirements
-
-   ```
-   $ pip install -r requirements.txt
-   ```
-
-2. Run the app
-
-   ```
-   $ streamlit run streamlit_app.py
-   ```
+```bash
+python3 -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+streamlit run app_streamlit.py
