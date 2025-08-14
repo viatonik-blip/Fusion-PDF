@@ -163,7 +163,7 @@ st.markdown("<hr style='opacity:.2;'>", unsafe_allow_html=True)
 c1, c2, c3 = st.columns([1,1,1])
 with c2:
     st.markdown(
-        "<div style='text-align:center; color:#999; font-size:12px;'>Un petit ❤️ pour l'app ?</div>",
+        "<div style='text-align:center; color:#999; font-size:12px;'",
         unsafe_allow_html=True
     )
     if st.button("❤️", help="Cliquez…"):
