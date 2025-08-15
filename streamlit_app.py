@@ -1,4 +1,4 @@
-import io, time, os
+import io, time, os, re
 import streamlit as st
 from pypdf import PdfWriter, PdfReader
 
@@ -114,10 +114,27 @@ st.write("### 2) Aperçu de l’ordre")
 for i, nm in enumerate(st.session_state.order_names, start=1):
     st.markdown(f"**{i}.** {nm}")
 
-# --- Nom du fichier de sortie
+# --- Nom du fichier de sortie (persistant)
+def default_out_name():
+    return f"fusion_{time.strftime('%Y-%m-%d_%H-%M-%S')}"
+
+if "out_name" not in st.session_state:
+    st.session_state.out_name = default_out_name()
+
 st.write("### 3) Nom du fichier de sortie")
-default_name = f"fusion_{time.strftime('%Y-%m-%d_%H-%M-%S')}.pdf"
-file_name = st.text_input("Nom du fichier", value=default_name)
+st.session_state.out_name = st.text_input("Nom du fichier (sans extension ou .pdf)", value=st.session_state.out_name, key="out_name_input")
+
+def sanitize_filename(name: str) -> str:
+    name = name.strip()
+    # retirer caractères non valides pour noms de fichiers (Windows/Linux/Mac)
+    name = re.sub(r'[\\/:*?"<>|]+', "_", name)
+    # éviter nom vide
+    if not name:
+        name = default_out_name()
+    # forcer extension .pdf
+    if not name.lower().endswith(".pdf"):
+        name += ".pdf"
+    return name
 
 # --- Fusion
 if st.button("🚀 Fusionner dans cet ordre"):
@@ -144,36 +161,12 @@ if st.button("🚀 Fusionner dans cet ordre"):
     out = io.BytesIO()
     writer.write(out)
     out.seek(0)
-    st.success("Fusion réussie.")
-    safe_name = file_name if file_name.lower().endswith(".pdf") else f"{file_name}.pdf"
+
+    final_name = sanitize_filename(st.session_state.out_name)
+    st.success(f"Fusion réussie. Fichier prêt : {final_name}")
     st.download_button(
         "⬇️ Télécharger le PDF fusionné",
         data=out,
-        file_name=safe_name,
+        file_name=final_name,
         mime="application/pdf"
-    )
-
-# --- EASTER EGG VISUEL (petit cœur à cliquer) ---
-if "ee_clicks" not in st.session_state:
-    st.session_state.ee_clicks = 0
-if "ee_shown" not in st.session_state:
-    st.session_state.ee_shown = False
-
-st.markdown("<hr style='opacity:.2;'>", unsafe_allow_html=True)
-c1, c2, c3 = st.columns([1,1,1])
-with c2:
-    st.markdown(
-        "<div style='text-align:center; color:#999; font-size:12px;'",
-        unsafe_allow_html=True
-    )
-    if st.button("❤️", help="Cliquez…"):
-        st.session_state.ee_clicks += 1
-        if st.session_state.ee_clicks >= 7:
-            st.session_state.ee_shown = True
-
-if st.session_state.ee_shown:
-    st.balloons()
-    st.markdown(
-        "<div style='text-align:center; margin-top:6px; font-size:12px; color:#888;'>jtm bab</div>",
-        unsafe_allow_html=True
     )
