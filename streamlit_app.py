@@ -91,9 +91,7 @@ if total_mb > MAX_MB:
     st.stop()
 
 # --- Drag-and-drop (ou fallback)
-st.write("### 1) Réorganisez (glisser-déposer) / Reorder (drag and drop) 
-
-")
+st.write("### 1) Réorganisez (glisser-déposer) / Reorder (drag and drop) ")
 if HAS_SORT:
     ordered_names = sortables.sort_items(
         st.session_state.order_names,
