@@ -31,7 +31,7 @@ def auth_view():
                 padding:20px 18px; background:#fff;">
                 <h3 style="margin-top:0">🔐 Accès interne / Internal access </h3>
                 <p style="margin-bottom:10px;color:#666">
-                    Saisissez le mot de passe pour accéder à l’outil. / 
+                    Saisissez le mot de passe pour accéder à l’outil. / Enter the password to access the tool.
                 </p>
             </div>
             """,
