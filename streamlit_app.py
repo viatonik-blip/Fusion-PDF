@@ -9,8 +9,8 @@ try:
 except Exception:
     HAS_SORT = False
 
-st.set_page_config(page_title="Fusion PDF", page_icon="📎")
-st.title("📎 Fusionner des PDF")
+st.set_page_config(page_title="Fusion PDF / Merge PDF", page_icon="📎")
+st.title("📎 Fusionner des documents / Merge documents")
 
 # ===========
 # Auth au centre
@@ -38,13 +38,13 @@ def auth_view():
             unsafe_allow_html=True,
         )
         with st.form("auth_form", clear_on_submit=False):
-            pw = st.text_input("Mot de passe", type="password", placeholder="Votre mot de passe")
-            submitted = st.form_submit_button("Valider")
+            pw = st.text_input("Mot de passe / Password", type="password", placeholder="Votre mot de passe / Your password")
+            submitted = st.form_submit_button("Valider / Validate")
             if submitted:
                 if pw == APP_PASSWORD:
                     st.session_state.authed = True
                 else:
-                    st.error("Mot de passe incorrect.")
+                    st.error("Mot de passe incorrect./ Wrong password.")
 
 if APP_PASSWORD and not st.session_state.authed:
     auth_view()
@@ -55,13 +55,15 @@ if APP_PASSWORD and not st.session_state.authed:
 # =========================
 
 uploaded = st.file_uploader(
-    "Glissez vos PDF (2+). Réorganisez ensuite par glisser-déposer.",
+    "Glissez vos PDF (2+). Réorganisez ensuite par glisser-déposer. / Drag and drop your PDFs (2+). Then rearrange them using drag and drop.",
     type=["pdf"],
     accept_multiple_files=True
 )
 
 if not uploaded or len(uploaded) < 2:
-    st.info("Ajoutez au moins 2 fichiers PDF pour commencer.")
+    st.info("Ajoutez au moins 2 fichiers PDF pour commencer. / Add at least 2 PDF files to get started.
+
+")
     st.stop()
 
 # --- Construire des noms "affichés" uniques (gère les doublons: nom.pdf (2), nom.pdf (3), ...)
@@ -91,7 +93,9 @@ if total_mb > MAX_MB:
     st.stop()
 
 # --- Drag-and-drop (ou fallback)
-st.write("### 1) Réorganisez (glisser-déposer)")
+st.write("### 1) Réorganisez (glisser-déposer) / Reorder (drag and drop) 
+
+")
 if HAS_SORT:
     ordered_names = sortables.sort_items(
         st.session_state.order_names,
@@ -110,7 +114,7 @@ else:
         st.session_state.order_names = order
 
 # --- Aperçu numéroté
-st.write("### 2) Aperçu de l’ordre")
+st.write("### 2) Aperçu de l’ordre / Order overview ")
 for i, nm in enumerate(st.session_state.order_names, start=1):
     st.markdown(f"**{i}.** {nm}")
 
@@ -121,8 +125,10 @@ def default_out_name():
 if "out_name" not in st.session_state:
     st.session_state.out_name = default_out_name()
 
-st.write("### 3) Nom du fichier de sortie")
-st.session_state.out_name = st.text_input("Nom du fichier (sans extension ou .pdf)", value=st.session_state.out_name, key="out_name_input")
+st.write("### 3) Nom du fichier de sortie / Output file name ")
+st.session_state.out_name = st.text_input("Nom du fichier (sans extension ou .pdf) / File name (without extension or .pdf)
+
+", value=st.session_state.out_name, key="out_name_input")
 
 def sanitize_filename(name: str) -> str:
     name = name.strip()
@@ -137,7 +143,9 @@ def sanitize_filename(name: str) -> str:
     return name
 
 # --- Fusion
-if st.button("🚀 Fusionner dans cet ordre"):
+if st.button("🚀 Fusionner dans cet ordre / Merge in this order
+
+"):
     # Recrée le mapping display_name -> bytes en suivant la même logique de dédoublonnage
     display_to_bytes = {}
     counts2 = {}
@@ -163,9 +171,9 @@ if st.button("🚀 Fusionner dans cet ordre"):
     out.seek(0)
 
     final_name = sanitize_filename(st.session_state.out_name)
-    st.success(f"Fusion réussie. Fichier prêt : {final_name}")
+    st.success(f"Fusion réussie. Fichier prêt / Succes. The file is ready : {final_name}")
     st.download_button(
-        "⬇️ Télécharger le PDF fusionné",
+        "⬇️ Télécharger le PDF fusionné / Download the merged PDF",
         data=out,
         file_name=final_name,
         mime="application/pdf"
