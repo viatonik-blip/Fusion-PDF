@@ -61,9 +61,7 @@ uploaded = st.file_uploader(
 )
 
 if not uploaded or len(uploaded) < 2:
-    st.info("Ajoutez au moins 2 fichiers PDF pour commencer. / Add at least 2 PDF files to get started.
-
-")
+    st.info("Ajoutez au moins 2 fichiers PDF pour commencer. / Add at least 2 PDF files to get started.")
     st.stop()
 
 # --- Construire des noms "affichés" uniques (gère les doublons: nom.pdf (2), nom.pdf (3), ...)
@@ -126,9 +124,7 @@ if "out_name" not in st.session_state:
     st.session_state.out_name = default_out_name()
 
 st.write("### 3) Nom du fichier de sortie / Output file name ")
-st.session_state.out_name = st.text_input("Nom du fichier (sans extension ou .pdf) / File name (without extension or .pdf)
-
-", value=st.session_state.out_name, key="out_name_input")
+st.session_state.out_name = st.text_input("Nom du fichier (sans extension ou .pdf) / File name (without extension or .pdf)", value=st.session_state.out_name, key="out_name_input")
 
 def sanitize_filename(name: str) -> str:
     name = name.strip()
@@ -143,9 +139,7 @@ def sanitize_filename(name: str) -> str:
     return name
 
 # --- Fusion
-if st.button("🚀 Fusionner dans cet ordre / Merge in this order
-
-"):
+if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
     # Recrée le mapping display_name -> bytes en suivant la même logique de dédoublonnage
     display_to_bytes = {}
     counts2 = {}
