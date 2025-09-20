@@ -47,56 +47,91 @@ def _compress_lossless_pikepdf(in_bytes: bytes):
         return None
 
 
-def _compress_rasterize_pymupdf(in_bytes: bytes, target_mb: float = 25.0):
-    """Compression 'forte' : chaque page devient une image JPEG dans un nouveau PDF.
-       ⚠️ Perte : le texte n’est plus sélectionnable/recherchable."""
+def _compress_rasterize_pymupdf(
+    in_bytes: bytes,
+    target_mb: float = 25.0,
+    dpi_candidates=(150, 130, 110, 96, 85, 72),
+    jpeg_qualities=(75, 60, 50, 40),
+):
+    """
+    Compression 'forte' : rend chaque page en image JPEG.
+    Essaie plusieurs combinaisons (DPI x qualité) jusqu’à passer sous target_mb.
+    Renvoie (bytes, {'dpi':X, 'quality':Y}) ou (best_bytes, best_params) si aucune ne passe.
+    ⚠️ Perte : le texte n’est plus sélectionnable/recherchable.
+    """
     if not HAS_PYMUPDF:
-        return None
+        return None, None
     try:
-        # Essais du plus net au plus léger
-        for dpi in [150, 130, 110, 96, 85, 72]:
+        best_bytes = None
+        best_size = float("inf")
+        best_params = None
+
+        # Pré-rendu des pages pour chaque DPI (évite de recharger le PDF à chaque qualité)
+        for dpi in dpi_candidates:
             src = fitz.open("pdf", in_bytes)
-            out = fitz.open()
             zoom = dpi / 72.0
             mat = fitz.Matrix(zoom, zoom)
-            for page in src:
-                pix = page.get_pixmap(matrix=mat, alpha=False)
-                img_bytes = pix.tobytes("jpeg", quality=75)  # qualité 75 %
-                new_page = out.new_page(width=pix.width, height=pix.height)
-                rect = fitz.Rect(0, 0, pix.width, pix.height)
-                new_page.insert_image(rect, stream=img_bytes, keep_proportion=False)
-            buf = out.tobytes()
-            if _size_mb(buf) <= target_mb:
-                return buf
-        # Renvoie la dernière tentative même si > target
-        return buf
+            pages_pix = [page.get_pixmap(matrix=mat, alpha=False) for page in src]
+
+            for q in jpeg_qualities:
+                out = fitz.open()
+                for pix in pages_pix:
+                    img_bytes = pix.tobytes("jpeg", quality=q)
+                    new_page = out.new_page(width=pix.width, height=pix.height)
+                    rect = fitz.Rect(0, 0, pix.width, pix.height)
+                    new_page.insert_image(rect, stream=img_bytes, keep_proportion=False)
+                buf = out.tobytes()
+                sz = _size_mb(buf)
+
+                if sz <= target_mb:
+                    return buf, {"dpi": dpi, "quality": q}
+
+                if sz < best_size:
+                    best_size = sz
+                    best_bytes = buf
+                    best_params = {"dpi": dpi, "quality": q}
+
+        return best_bytes, best_params
     except Exception:
-        return None
+        return None, None
 
 
-def compress_to_target(in_bytes: bytes, target_mb: float = 25.0):
+def compress_to_target(
+    in_bytes: bytes,
+    target_mb: float = 25.0,
+    force_aggressive_if_over_target: bool = True,
+    dpi_candidates=(150, 130, 110, 96, 85, 72),
+    jpeg_qualities=(75, 60, 50, 40),
+):
     """
-    Tente successivement : pikepdf (soft) -> PyMuPDF (forte).
-    Renvoie (final_bytes, method_label, stats_dict).
+    1) Soft (pikepdf). Si <= target, on s'arrête.
+    2) Si > target et autorisé: forte (rasterize) avec grille DPI/qualité.
+       -> retourne la première <= target, sinon la plus petite atteinte.
     """
     before = _size_mb(in_bytes)
 
-    # 1) Soft (sans perte)
+    # Soft (sans perte)
     best = in_bytes
     method = "none"
     soft = _compress_lossless_pikepdf(in_bytes)
     if soft and _size_mb(soft) < before:
         best = soft
         method = "pikepdf (soft)"
-        if _size_mb(best) <= target_mb:
-            return best, method, {"before_mb": before, "after_mb": _size_mb(best)}
+    if _size_mb(best) <= target_mb:
+        return best, method, {"before_mb": before, "after_mb": _size_mb(best)}
 
-    # 2) Forte (rasterisation)
-    hard = _compress_rasterize_pymupdf(best, target_mb=target_mb)
-    if hard and _size_mb(hard) < _size_mb(best):
-        return hard, "rasterize (images)", {"before_mb": before, "after_mb": _size_mb(hard)}
+    # Forte (rasterisation)
+    if force_aggressive_if_over_target and HAS_PYMUPDF:
+        hard, params = _compress_rasterize_pymupdf(
+            best, target_mb=target_mb,
+            dpi_candidates=dpi_candidates,
+            jpeg_qualities=jpeg_qualities,
+        )
+        if hard and _size_mb(hard) < _size_mb(best):
+            method = f"rasterize (dpi={params.get('dpi')}, q={params.get('quality')})" if params else "rasterize"
+            return hard, method, {"before_mb": before, "after_mb": _size_mb(hard)}
 
-    # fallback : retour du meilleur obtenu
+    # Aucun gain ou dépendances absentes -> retour 'best'
     return best, method, {"before_mb": before, "after_mb": _size_mb(best)}
 
 
@@ -156,7 +191,7 @@ if not uploaded or len(uploaded) < 2:
     st.info("Ajoutez au moins 2 fichiers PDF pour commencer. / Add at least 2 PDF files to get started.")
     st.stop()
 
-# --- Construire des noms "affichés" uniques (gère les doublons: nom.pdf (2), nom.pdf (3), ...)
+# --- Construire des noms "affichés" uniques (gère doublons: nom.pdf (2), etc.)
 raw_names = [f.name for f in uploaded]
 names_now, counts = [], {}
 for n in raw_names:
@@ -194,7 +229,7 @@ if HAS_SORT:
 else:
     st.info("Drag-and-drop non disponible (module manquant). Fallback ci-dessous.")
     order = st.multiselect(
-        "Cliquez les fichiers dans l'ordre souhaité",
+        "Cliquez les fichiers dans l'ordre souhaité / Click files in desired order",
         options=st.session_state.order_names,
         default=st.session_state.order_names
     )
@@ -235,6 +270,26 @@ compress_opt = st.checkbox(
     value=True,
     help="Tente d'abord une compression sans perte, puis une compression forte (rasterisation) si nécessaire."
 )
+
+# Réglages compression (avancés)
+with st.expander("⚙️ Options de compression / Compression options", expanded=False):
+    target_mb = st.number_input("Taille cible (Mo) / Target size (MB)", 5.0, 100.0, 25.0, 1.0)
+    force_aggr = st.checkbox("Toujours tenter la compression agressive si au-dessus de la cible / Always try aggressive compression if above target", value=True)
+    dpi_candidates = st.multiselect(
+        "DPI à essayer (du plus net au plus léger) / DPI candidates",
+        [150, 130, 110, 96, 85, 72],
+        default=[150, 130, 110, 96, 85, 72]
+    )
+    jpeg_qualities = st.multiselect(
+        "Qualités JPEG à essayer / JPEG qualities",
+        [75, 60, 50, 40],
+        default=[75, 60, 50, 40]
+    )
+
+# Diagnostic dispo libs
+st.caption(
+    f"Compression disponibles → pikepdf: {'✅' if HAS_PIKEPDF else '❌'} | PyMuPDF: {'✅' if HAS_PYMUPDF else '❌'}"
+)
 if compress_opt and (not HAS_PIKEPDF and not HAS_PYMUPDF):
     st.warning("Compression activée mais dépendances absentes (pikepdf/pymupdf). Le PDF sera livré non compressé.")
 
@@ -265,10 +320,17 @@ if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
     fused.seek(0)
     fused_bytes = fused.getvalue()
 
+    # Compression si demandée
     final_bytes, method, stats = (fused_bytes, "none", {"before_mb": _size_mb(fused_bytes), "after_mb": _size_mb(fused_bytes)})
     if compress_opt:
         with st.spinner("Compression du PDF … / Compressing PDF …"):
-            final_bytes, method, stats = compress_to_target(fused_bytes, target_mb=25.0)
+            final_bytes, method, stats = compress_to_target(
+                fused_bytes,
+                target_mb=target_mb,
+                force_aggressive_if_over_target=force_aggr,
+                dpi_candidates=tuple(dpi_candidates) if dpi_candidates else (150,130,110,96,85,72),
+                jpeg_qualities=tuple(jpeg_qualities) if jpeg_qualities else (75,60,50,40),
+            )
 
     final_name = sanitize_filename(st.session_state.out_name)
     st.success(f"OK ✅  Taille: {stats['after_mb']:.2f} Mo (avant: {stats['before_mb']:.2f} Mo) — méthode: {method}")
