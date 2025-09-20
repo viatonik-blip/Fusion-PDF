@@ -2,13 +2,105 @@ import io, time, os, re
 import streamlit as st
 from pypdf import PdfWriter, PdfReader
 
-# Essayez d'importer le composant drag-and-drop
+# Drag & drop
 try:
     import streamlit_sortables as sortables
     HAS_SORT = True
 except Exception:
     HAS_SORT = False
 
+# Compression (optionnelles)
+try:
+    import pikepdf  # compression "soft" sans perte
+    HAS_PIKEPDF = True
+except Exception:
+    HAS_PIKEPDF = False
+
+try:
+    import fitz  # PyMuPDF : rasterisation (forte compression)
+    HAS_PYMUPDF = True
+except Exception:
+    HAS_PYMUPDF = False
+
+
+# -------- Helpers compression --------
+def _size_mb(b: bytes) -> float:
+    return len(b) / (1024 * 1024)
+
+
+def _compress_lossless_pikepdf(in_bytes: bytes):
+    """Compression 'soft' (sans perte) via pikepdf. Renvoie bytes ou None."""
+    if not HAS_PIKEPDF:
+        return None
+    try:
+        bio_in = io.BytesIO(in_bytes)
+        with pikepdf.open(bio_in) as pdf:
+            bio_out = io.BytesIO()
+            pdf.save(
+                bio_out,
+                linearize=True,           # web-optimize
+                object_stream_mode=1,     # regroupe objets
+                compress_streams=True,    # compresse les streams
+            )
+            return bio_out.getvalue()
+    except Exception:
+        return None
+
+
+def _compress_rasterize_pymupdf(in_bytes: bytes, target_mb: float = 25.0):
+    """Compression 'forte' : chaque page devient une image JPEG dans un nouveau PDF.
+       ⚠️ Perte : le texte n’est plus sélectionnable/recherchable."""
+    if not HAS_PYMUPDF:
+        return None
+    try:
+        # Essais du plus net au plus léger
+        for dpi in [150, 130, 110, 96, 85, 72]:
+            src = fitz.open("pdf", in_bytes)
+            out = fitz.open()
+            zoom = dpi / 72.0
+            mat = fitz.Matrix(zoom, zoom)
+            for page in src:
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                img_bytes = pix.tobytes("jpeg", quality=75)  # qualité 75 %
+                new_page = out.new_page(width=pix.width, height=pix.height)
+                rect = fitz.Rect(0, 0, pix.width, pix.height)
+                new_page.insert_image(rect, stream=img_bytes, keep_proportion=False)
+            buf = out.tobytes()
+            if _size_mb(buf) <= target_mb:
+                return buf
+        # Renvoie la dernière tentative même si > target
+        return buf
+    except Exception:
+        return None
+
+
+def compress_to_target(in_bytes: bytes, target_mb: float = 25.0):
+    """
+    Tente successivement : pikepdf (soft) -> PyMuPDF (forte).
+    Renvoie (final_bytes, method_label, stats_dict).
+    """
+    before = _size_mb(in_bytes)
+
+    # 1) Soft (sans perte)
+    best = in_bytes
+    method = "none"
+    soft = _compress_lossless_pikepdf(in_bytes)
+    if soft and _size_mb(soft) < before:
+        best = soft
+        method = "pikepdf (soft)"
+        if _size_mb(best) <= target_mb:
+            return best, method, {"before_mb": before, "after_mb": _size_mb(best)}
+
+    # 2) Forte (rasterisation)
+    hard = _compress_rasterize_pymupdf(best, target_mb=target_mb)
+    if hard and _size_mb(hard) < _size_mb(best):
+        return hard, "rasterize (images)", {"before_mb": before, "after_mb": _size_mb(hard)}
+
+    # fallback : retour du meilleur obtenu
+    return best, method, {"before_mb": before, "after_mb": _size_mb(best)}
+
+
+# ---------------- UI / App ----------------
 st.set_page_config(page_title="Fusion PDF / Merge PDF", page_icon="📎")
 st.title("📎 Fusionner des documents / Merge documents")
 
@@ -122,23 +214,33 @@ if "out_name" not in st.session_state:
     st.session_state.out_name = default_out_name()
 
 st.write("### 3) Nom du fichier de sortie / Output file name ")
-st.session_state.out_name = st.text_input("Nom du fichier (sans extension ou .pdf) / File name (without extension or .pdf)", value=st.session_state.out_name, key="out_name_input")
+st.session_state.out_name = st.text_input(
+    "Nom du fichier (sans extension ou .pdf) / File name (without extension or .pdf)",
+    value=st.session_state.out_name,
+    key="out_name_input"
+)
 
 def sanitize_filename(name: str) -> str:
     name = name.strip()
-    # retirer caractères non valides pour noms de fichiers (Windows/Linux/Mac)
-    name = re.sub(r'[\\/:*?"<>|]+', "_", name)
-    # éviter nom vide
+    name = re.sub(r'[\\/:*?"<>|]+', "_", name)  # caractères interdits
     if not name:
         name = default_out_name()
-    # forcer extension .pdf
     if not name.lower().endswith(".pdf"):
         name += ".pdf"
     return name
 
+# --- Option de compression
+compress_opt = st.checkbox(
+    "Compresser le PDF final ≤ 25 Mo (e-mail) / Compress final PDF ≤ 25 MB (email)",
+    value=True,
+    help="Tente d'abord une compression sans perte, puis une compression forte (rasterisation) si nécessaire."
+)
+if compress_opt and (not HAS_PIKEPDF and not HAS_PYMUPDF):
+    st.warning("Compression activée mais dépendances absentes (pikepdf/pymupdf). Le PDF sera livré non compressé.")
+
 # --- Fusion
 if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
-    # Recrée le mapping display_name -> bytes en suivant la même logique de dédoublonnage
+    # Recrée le mapping display_name -> bytes (dédoublonnage aligné à l'UI)
     display_to_bytes = {}
     counts2 = {}
     for f in uploaded:
@@ -146,27 +248,36 @@ if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
         if not raw.startswith(b"%PDF-"):
             st.error(f"Non-PDF ou corrompu : {f.name}")
             st.stop()
-
         n = f.name
         counts2[n] = counts2.get(n, 0) + 1
         display = n if counts2[n] == 1 else f"{n} ({counts2[n]})"
         display_to_bytes[display] = raw
 
+    # Fusion en mémoire
     writer = PdfWriter()
     for display_name in st.session_state.order_names:
         reader = PdfReader(io.BytesIO(display_to_bytes[display_name]))
         for page in reader.pages:
             writer.add_page(page)
 
-    out = io.BytesIO()
-    writer.write(out)
-    out.seek(0)
+    fused = io.BytesIO()
+    writer.write(fused)
+    fused.seek(0)
+    fused_bytes = fused.getvalue()
+
+    final_bytes, method, stats = (fused_bytes, "none", {"before_mb": _size_mb(fused_bytes), "after_mb": _size_mb(fused_bytes)})
+    if compress_opt:
+        with st.spinner("Compression du PDF … / Compressing PDF …"):
+            final_bytes, method, stats = compress_to_target(fused_bytes, target_mb=25.0)
 
     final_name = sanitize_filename(st.session_state.out_name)
-    st.success(f"Fusion réussie. Fichier prêt / Succes. The file is ready : {final_name}")
+    st.success(f"OK ✅  Taille: {stats['after_mb']:.2f} Mo (avant: {stats['before_mb']:.2f} Mo) — méthode: {method}")
     st.download_button(
         "⬇️ Télécharger le PDF fusionné / Download the merged PDF",
-        data=out,
+        data=final_bytes,
         file_name=final_name,
         mime="application/pdf"
     )
+
+    if method.startswith("rasterize"):
+        st.info("Le PDF a été converti en images pour réduire la taille. Le texte n’est plus sélectionnable / searchable.")
