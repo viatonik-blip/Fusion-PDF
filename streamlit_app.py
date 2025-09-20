@@ -55,6 +55,7 @@ def _compress_lossless_pikepdf(in_bytes: bytes) -> bytes | None:
         return None
 
 
+# --- remplace entièrement cette fonction ---
 def _compress_rasterize_pymupdf(
     in_bytes: bytes,
     target_mb: float = TARGET_MB,
@@ -65,7 +66,7 @@ def _compress_rasterize_pymupdf(
     """
     Compression 'forte' : rend chaque page en image JPEG.
     Essaie une grille (gris->couleur, DPI x qualité) jusqu'à passer sous target_mb.
-    Renvoie (bytes, {'dpi':X, 'quality':Y, 'gray':bool}) ou (meilleur_bytes, meilleurs_params) si on n'atteint pas la cible.
+    Renvoie (bytes, {'dpi':X, 'quality':Y, 'gray':bool}) ou (meilleur_bytes, meilleurs_params).
     ⚠️ Le texte n’est plus sélectionnable/recherchable.
     """
     if not HAS_PYMUPDF:
@@ -81,20 +82,29 @@ def _compress_rasterize_pymupdf(
                 src = fitz.open("pdf", in_bytes)
                 zoom = dpi / 72.0
                 mat = fitz.Matrix(zoom, zoom)
+
                 # Pré-rendu des pages au DPI choisi
                 pages_pix = []
                 for page in src:
                     pix = page.get_pixmap(matrix=mat, alpha=False)
-                    if use_gray and pix.n >= 3:  # convertir en niveaux de gris si possible
-                        pix = fitz.Pixmap(pix, 0)  # canal 0 => gray
+                    # 🔧 PATCH PyMuPDF >= 1.24 : conversion gris correcte
+                    if use_gray:
+                        try:
+                            # si l'image a une colorspace multi-canaux, convertis en GRAY
+                            if getattr(pix, "colorspace", None) and getattr(pix.colorspace, "n", 1) > 1:
+                                pix = fitz.Pixmap(fitz.csGRAY, pix)
+                        except Exception:
+                            # si la conversion échoue, on reste en couleur pour cette page
+                            pass
                     pages_pix.append(pix)
 
                 for q in jpeg_qualities:
                     out = fitz.open()
                     for pix in pages_pix:
                         img_bytes = pix.tobytes("jpeg", quality=q)
-                        new_page = out.new_page(width=pix.width, height=pix.height)
-                        rect = fitz.Rect(0, 0, pix.width, pix.height)
+                        page_w, page_h = pix.width, pix.height
+                        new_page = out.new_page(width=page_w, height=page_h)
+                        rect = fitz.Rect(0, 0, page_w, page_h)
                         new_page.insert_image(rect, stream=img_bytes, keep_proportion=False)
                     buf = out.tobytes()
                     sz = _size_mb(buf)
@@ -108,30 +118,36 @@ def _compress_rasterize_pymupdf(
                         best_params = {"dpi": dpi, "quality": q, "gray": use_gray}
 
         return best_bytes, best_params
-    except Exception:
+    except Exception as e:
+        # surface l’erreur pour qu’elle apparaisse dans l’app
+        st.error(f"PyMuPDF rasterize error: {e}")
         return None, None
 
 
+# --- remplace entièrement cette fonction ---
 def compress_to_target_auto(in_bytes: bytes, target_mb: float = TARGET_MB):
     """
     1) Tente pikepdf (soft). Si <= target -> retour.
     2) Sinon tente PyMuPDF (agressif, grille complète) jusqu'à passer sous target.
        -> Si aucune combinaison n'atteint la cible, renvoie la plus petite atteinte.
-    Retourne (final_bytes, method_label, stats_dict).
     """
     before = _size_mb(in_bytes)
 
     # 1) Soft (sans perte)
     best = in_bytes
     method = "none"
-    soft = _compress_lossless_pikepdf(in_bytes)
-    if soft is not None and _size_mb(soft) < before:
-        best = soft
-        method = "pikepdf (soft)"
+    try:
+        soft = _compress_lossless_pikepdf(in_bytes)
+        if soft is not None and _size_mb(soft) < before:
+            best = soft
+            method = "pikepdf (soft)"
+    except Exception as e:
+        st.warning(f"pikepdf a échoué: {e}")
+
     if _size_mb(best) <= target_mb:
         return best, method, {"before_mb": before, "after_mb": _size_mb(best)}
 
-    # 2) Agressif auto si au-dessus de la cible et PyMuPDF dispo
+    # 2) Aggressif auto si au-dessus de la cible
     if HAS_PYMUPDF:
         hard, params = _compress_rasterize_pymupdf(
             best, target_mb=target_mb,
@@ -143,9 +159,16 @@ def compress_to_target_auto(in_bytes: bytes, target_mb: float = TARGET_MB):
             gray_flag = params.get("gray") if params else None
             method = f"rasterize (dpi={params.get('dpi')}, q={params.get('quality')}, gray={gray_flag})" if params else "rasterize"
             return hard, method, {"before_mb": before, "after_mb": _size_mb(hard)}
+        else:
+            st.warning("PyMuPDF (agressif) a tourné, mais n'a pas fourni de version plus petite. "
+                       "On livre la meilleure version atteinte.")
+            if hard is not None:
+                # Même si ce n'est pas sous la cible, renvoyer la plus petite atteinte
+                return hard, "rasterize (best-effort)", {"before_mb": before, "after_mb": _size_mb(hard)}
 
     # 3) Fallback : aucun gain (ou dépendances absentes) -> retour best
     return best, method, {"before_mb": before, "after_mb": _size_mb(best)}
+
 
 
 # ===================== UI / App =====================
