@@ -1,6 +1,6 @@
 import io, time, os, re
 import streamlit as st
-from pypdf import PdfWriter, PdfReader
+from pypdf import PdfWriter, PdfReader, PdfMerger
 from pypdf.errors import PdfReadError
 from pypdf.generic import NameObject, BooleanObject
 
@@ -93,14 +93,6 @@ if total_mb > MAX_MB:
 
 # ========= Tri drag-and-drop (ou fallback) =========
 st.write("### 1) Réorganisez (glisser-déposer) / Reorder (drag & drop)")
-cols = st.columns([1, 1])
-with cols[0]:
-    if st.button("↺ Réinitialiser l’ordre / Reset order"):
-        st.session_state.order_names = names_now[:]
-        st.session_state._prev_names = names_now[:]
-        st.session_state.sort_key += 1
-        st.experimental_rerun()
-
 if HAS_SORT:
     ordered_names = sortables.sort_items(
         st.session_state.order_names,
@@ -146,15 +138,13 @@ def sanitize_filename(name: str) -> str:
         name += ".pdf"
     return name
 
-# ========= Fusion (préserve formulaires/annotations) =========
+# ========= Fusion (préserve formulaires/annotations au mieux) =========
 if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
     # Map display_name -> bytes (cohérent avec l'affichage)
     display_to_bytes = {}
     counts2 = {}
     for f in uploaded:
-        # Lecture bytes robuste
         raw = f.getvalue() if hasattr(f, "getvalue") else f.read()
-        # Vérif tolérante de l'entête (certains PDF valides ont des octets avant %PDF-)
         head = raw[:1024].lstrip()
         if not head.startswith(b"%PDF-"):
             st.warning(f"{f.name}: en-tête PDF non standard, tentative de lecture quand même…")
@@ -163,14 +153,15 @@ if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
         display = n if counts2[n] == 1 else f"{n} ({counts2[n]})"
         display_to_bytes[display] = raw
 
-    writer = PdfWriter()
     pages_total = 0
 
-    # 1) On utilise append pour copier pages + annotations + champs (si présents)
+    # 1) Concaténation avec PdfMerger (compatible pypdf 6)
+    merger = PdfMerger()
     for display_name in st.session_state.order_names:
         data = display_to_bytes[display_name]
+        # PdfMerger lit directement le flux; on calcule aussi le nombre de pages
         try:
-            reader = PdfReader(io.BytesIO(data))
+            tmp_reader = PdfReader(io.BytesIO(data))
         except PdfReadError as e:
             st.error(f"Impossible de lire {display_name} : {e}")
             st.stop()
@@ -178,38 +169,33 @@ if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
             st.error(f"Erreur inattendue en lisant {display_name} : {e}")
             st.stop()
 
-        # append pour porter annotations/champs
-        # import_bookmarks=False pour éviter des signets hétérogènes,
-        # import_annotations=True pour conserver l'apparence (tampons, widgets…)
-        writer.append(
-            reader,
-            import_bookmarks=False,
-            import_annotations=True,
-            import_named_destinations=False,
-        )
-
-        try:
-            pages_total += len(reader.pages)
-        except Exception:
-            pass
-
+        pages_total += len(tmp_reader.pages)
         if pages_total > MAX_PAGES:
             st.error(f"Trop de pages au total (> {MAX_PAGES}). Fusion interrompue.")
             st.stop()
 
-    # 2) Forcer l'affichage des champs remplis : /AcroForm /NeedAppearances true
+        merger.append(io.BytesIO(data))
+
+    fused_buf = io.BytesIO()
+    merger.write(fused_buf)
+    merger.close()
+    fused_buf.seek(0)
+
+    # 2) Forcer /NeedAppearances=true pour bien afficher les champs remplis
+    reader_final = PdfReader(fused_buf)
+    writer_final = PdfWriter()
+    # clone intégral du document fusionné
+    writer_final.clone_reader_document_root(reader_final)
     try:
-        root = writer._root_object  # accès au catalogue
+        root = writer_final._root_object
         acro = root.get("/AcroForm")
         if acro is not None:
             acro.update({NameObject("/NeedAppearances"): BooleanObject(True)})
     except Exception:
-        # Certaines versions internes peuvent différer ; on ignore si non disponible
         pass
 
-    # 3) Écriture
     out = io.BytesIO()
-    writer.write(out)
+    writer_final.write(out)
     out.seek(0)
 
     final_name = sanitize_filename(st.session_state.out_name)
@@ -221,9 +207,8 @@ if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
         mime="application/pdf"
     )
 
-    # ⚠️ Note explicite sur les signatures
+    # ⚠️ Note signatures
     st.info(
-        "ℹ️ **Note signatures** : si vos PDF contiennent des **signatures numériques**, "
-        "toute modification (dont la fusion) invalide la **validité cryptographique**. "
-        "L’apparence visuelle de la signature est conservée, mais elle ne sera plus reconnue comme ‘valide’."
+        "ℹ️ **Note signatures** : les **signatures numériques** deviennent non valides après fusion. "
+        "L’apparence visuelle est conservée, mais la validité cryptographique est perdue."
     )
