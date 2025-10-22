@@ -114,12 +114,6 @@ else:
     if len(order) == len(st.session_state.order_names):
         st.session_state.order_names = order
 
-# Raccourci : ordre alpha
-col_a, col_b = st.columns([1, 3])
-with col_a:
-    if st.button("↺ Ordre alphabétique"):
-        st.session_state.order_names = sorted(st.session_state.order_names, key=str.casefold)
-
 # ========= Aperçu numéroté =========
 st.write("### 2) Aperçu de l’ordre / Order overview")
 for i, nm in enumerate(st.session_state.order_names, start=1):
@@ -215,7 +209,6 @@ if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
             root.update({NameObject("/AcroForm"): acro})
         acro.update({NameObject("/NeedAppearances"): BooleanObject(True)})
     except Exception:
-        # on ignore si la racine/acrform n'est pas modifiable ici
         pass
 
     # Écriture finale
@@ -229,13 +222,6 @@ if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
         data=out,
         file_name=final_name,
         mime="application/pdf"
-    )
-
-    # ⚠️ Note signatures
-    st.warning(
-        "⚠️ **Signatures numériques** : après toute fusion, la **validité cryptographique est perdue** "
-        "(l’aperçu visuel reste). / Digital signatures become **cryptographically invalid** after merge "
-        "(visual appearance is kept)."
     )
 
 # Petit pied de page utile au debug
