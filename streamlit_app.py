@@ -1,8 +1,9 @@
+# streamlit_app.py
 import io, time, os, re
 import streamlit as st
-from pypdf import PdfWriter, PdfReader, PdfMerger
+from pypdf import PdfWriter, PdfReader
 from pypdf.errors import PdfReadError
-from pypdf.generic import NameObject, BooleanObject
+from pypdf.generic import NameObject, BooleanObject, DictionaryObject
 
 # ========= Composant drag-and-drop (optionnel) =========
 try:
@@ -10,6 +11,9 @@ try:
     HAS_SORT = True
 except Exception:
     HAS_SORT = False
+
+# Détection de l'API append (pypdf >= 5 expose PdfWriter.append)
+WRITER_HAS_APPEND = hasattr(PdfWriter, "append")
 
 # ========= Page / Titre =========
 st.set_page_config(page_title="Fusion PDF / Merge PDF", page_icon="📎")
@@ -110,6 +114,12 @@ else:
     if len(order) == len(st.session_state.order_names):
         st.session_state.order_names = order
 
+# Raccourci : ordre alpha
+col_a, col_b = st.columns([1, 3])
+with col_a:
+    if st.button("↺ Ordre alphabétique"):
+        st.session_state.order_names = sorted(st.session_state.order_names, key=str.casefold)
+
 # ========= Aperçu numéroté =========
 st.write("### 2) Aperçu de l’ordre / Order overview")
 for i, nm in enumerate(st.session_state.order_names, start=1):
@@ -130,22 +140,23 @@ st.session_state.out_name = st.text_input(
 )
 
 def sanitize_filename(name: str) -> str:
-    name = name.strip()
-    name = re.sub(r'[\\/:*?\"<>|]+', "_", name)  # caractères interdits
-    if not name:
+    name = re.sub(r"\s+", " ", name.strip())
+    name = re.sub(r'[\\/:*?"<>|]+', "_", name)  # caractères interdits
+    if not name or name in {".", ".."}:
         name = default_out_name()
+    name = re.sub(r"\.+$", "", name)  # retire les points finaux
     if not name.lower().endswith(".pdf"):
         name += ".pdf"
     return name
 
-# ========= Fusion (préserve formulaires/annotations au mieux) =========
+# ========= Fusion (PdfWriter only ; append si dispo) =========
 if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
     # Map display_name -> bytes (cohérent avec l'affichage)
     display_to_bytes = {}
     counts2 = {}
     for f in uploaded:
         raw = f.getvalue() if hasattr(f, "getvalue") else f.read()
-        head = raw[:1024].lstrip()
+        head = (raw[:1024] if raw else b"").lstrip()
         if not head.startswith(b"%PDF-"):
             st.warning(f"{f.name}: en-tête PDF non standard, tentative de lecture quand même…")
         n = f.name
@@ -154,14 +165,16 @@ if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
         display_to_bytes[display] = raw
 
     pages_total = 0
+    out = io.BytesIO()
+    writer = PdfWriter()
 
-    # 1) Concaténation avec PdfMerger (compatible pypdf 6)
-    merger = PdfMerger()
-    for display_name in st.session_state.order_names:
+    prog = st.progress(0.0, text="Préparation… / Preparing…")
+    total_files = len(st.session_state.order_names)
+
+    for idx, display_name in enumerate(st.session_state.order_names, start=1):
         data = display_to_bytes[display_name]
-        # PdfMerger lit directement le flux; on calcule aussi le nombre de pages
         try:
-            tmp_reader = PdfReader(io.BytesIO(data))
+            reader = PdfReader(io.BytesIO(data))
         except PdfReadError as e:
             st.error(f"Impossible de lire {display_name} : {e}")
             st.stop()
@@ -169,33 +182,44 @@ if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
             st.error(f"Erreur inattendue en lisant {display_name} : {e}")
             st.stop()
 
-        pages_total += len(tmp_reader.pages)
+        # Gestion PDF chiffré : tentative mot de passe vide
+        if getattr(reader, "is_encrypted", False):
+            try:
+                reader.decrypt("")
+            except Exception:
+                st.error(f"{display_name} est protégé par mot de passe. Retirez la protection puis réessayez.")
+                st.stop()
+
+        pages_total += len(reader.pages)
         if pages_total > MAX_PAGES:
             st.error(f"Trop de pages au total (> {MAX_PAGES}). Fusion interrompue.")
             st.stop()
 
-        merger.append(io.BytesIO(data))
+        # Fusion
+        if WRITER_HAS_APPEND:
+            # pypdf >= 5 : fusion du document entier en une fois
+            writer.append(reader)
+        else:
+            # Fallback universel : page par page
+            for p in reader.pages:
+                writer.add_page(p)
 
-    fused_buf = io.BytesIO()
-    merger.write(fused_buf)
-    merger.close()
-    fused_buf.seek(0)
+        prog.progress(idx / total_files, text=f"Ajout de {display_name} ({idx}/{total_files})…")
 
-    # 2) Forcer /NeedAppearances=true pour bien afficher les champs remplis
-    reader_final = PdfReader(fused_buf)
-    writer_final = PdfWriter()
-    # clone intégral du document fusionné
-    writer_final.clone_reader_document_root(reader_final)
+    # Forcer /NeedAppearances=true pour bien afficher les champs remplis
     try:
-        root = writer_final._root_object
+        root = writer._root_object
         acro = root.get("/AcroForm")
-        if acro is not None:
-            acro.update({NameObject("/NeedAppearances"): BooleanObject(True)})
+        if acro is None:
+            acro = DictionaryObject()
+            root.update({NameObject("/AcroForm"): acro})
+        acro.update({NameObject("/NeedAppearances"): BooleanObject(True)})
     except Exception:
+        # on ignore si la racine/acrform n'est pas modifiable ici
         pass
 
-    out = io.BytesIO()
-    writer_final.write(out)
+    # Écriture finale
+    writer.write(out)
     out.seek(0)
 
     final_name = sanitize_filename(st.session_state.out_name)
@@ -208,7 +232,11 @@ if st.button("🚀 Fusionner dans cet ordre / Merge in this order"):
     )
 
     # ⚠️ Note signatures
-    st.info(
-        "ℹ️ **Note signatures** : les **signatures numériques** deviennent non valides après fusion. "
-        "L’apparence visuelle est conservée, mais la validité cryptographique est perdue."
+    st.warning(
+        "⚠️ **Signatures numériques** : après toute fusion, la **validité cryptographique est perdue** "
+        "(l’aperçu visuel reste). / Digital signatures become **cryptographically invalid** after merge "
+        "(visual appearance is kept)."
     )
+
+# Petit pied de page utile au debug
+st.caption(f"pypdf writer append: {WRITER_HAS_APPEND} • MAX_MB={MAX_MB} • MAX_PAGES={MAX_PAGES}")
